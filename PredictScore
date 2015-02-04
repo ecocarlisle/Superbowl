@@ -1,0 +1,292 @@
+proc import datafile='/home/ecocarlisle/JAC_pgms/2011_2013_team_gamelogs.csv'
+     out=nflseason2011to2013
+     dbms=csv
+     replace;
+     getnames=yes;
+run;
+
+proc print data=superbowl_jc(obs=10);
+run;
+
+data superbowl_jc;
+set nflseason2011to2013;
+run;
+
+* EDA;
+proc contents data=superbowl_jc;
+run;
+
+proc means data=superbowl_jc nmiss mean median max min ndec=0 p1 p5 p95 p99;
+run;
+
+* we can see expected correlations and nothing unexpected.;
+proc sgscatter data=superbowl_jc;
+matrix Off1st_down OffTotYd OffPassY OffRushY OffTO Def1stD DefTotYd DefPassY DefRushY DefTO/
+diagonal=(histogram);
+run;
+
+* test out some models;
+proc reg data=superbowl_jc plots(only) = (rsquare adjrsq cp aic bic);
+model score_opp = DefPassY ExpectedOffense ExpectedDefense ExpectedSpTms/selection = rsquare cp adjrsq aic bic;
+run;
+
+proc reg data=superbowl_jc outest=betas;
+model score_tm =  Off1st_down OffTotYd OffPassY OffRushY OffTO Def1stD DefTotYd DefPassY DefRushY DefTO /vif aic adjrsq
+selection=backward;
+run;
+quit;
+
+proc reg data=superbowl_jc outest=betas;
+model score_opp = Off1st_down OffTotYd OffPassY OffRushY OffTO Def1stD DefTotYd DefPassY DefRushY DefTO ExpectedOffense ExpectedDefense ExpectedSpTms /vif aic adjrsq
+selection=backward;
+run;
+quit;
+
+* make some transformations;
+data TEMPFILE_trng;
+set nflseason2011to2013;
+*///correct missing values///;
+if missing(OffTO) then OffTO = 0;
+if missing(DefTO) then DefTO = 0;
+
+run;
+
+* see if our models are better now;
+proc reg data=TEMPFILE_trng outest=betas;
+model score_opp = Off1st_down OffTotYd OffPassY OffRushY OffTO Def1stD DefTotYd DefPassY DefRushY DefTO/vif aic adjrsq
+selection=backward;
+run;
+quit;
+
+proc reg data=TEMPFILE_trng outest=betas;
+model score_tm =  Off1st_down OffTotYd OffPassY OffRushY OffTO Def1stD DefTotYd DefPassY DefRushY DefTO/vif aic adjrsq
+selection=backward;
+run;
+quit;
+
+proc reg data=TEMPFILE_trng plots(only) = (rsquare adjrsq cp aic bic);
+model score_opp = Off1st_down OffTotYd OffPassY OffRushY OffTO Def1stD DefTotYd DefPassY DefRushY DefTO/selection = rsquare cp adjrsq aic bic;
+run;
+
+* looks like there might be an outlier so take a closer look;
+proc univariate data=TEMPFILE_trng(drop=score_tm score_opp week) plot;
+run;
+
+* dichotomize time;
+data one;
+set tempfile_trng;
+
+* create dummy vars;
+if (OffTo='0') then OffTo_0=1; else OffTo_0=0;
+if (OffTo='1') then OffTo_1=1; else OffTo_1=0;
+if (OffTo='2') then OffTo_2=1; else OffTo_2=0;
+if (OffTo='3') then OffTo_3=1; else OffTo_3=0;
+if (OffTo='4') then OffTo_4=1; else OffTo_4=0;
+if (OffTo='5') then OffTo_5=1; else OffTo_5=0;
+
+if (DefTo='0') then DefTo_0=1; else DefTo_0=0;
+if (DefTo='1') then DefTo_1=1; else DefTo_1=0;
+if (DefTo='2') then DefTo_2=1; else DefTo_2=0;
+if (DefTo='3') then DefTo_3=1; else DefTo_3=0;
+if (DefTo='4') then DefTo_4=1; else DefTo_4=0;
+if (DefTo='5') then DefTo_5=1; else DefTo_5=0;
+run;
+
+* not as good as model when we dichotomize;
+proc reg data=one outest=betas;
+model score_opp =  Off1st_down OffTotYd OffPassY OffRushY OffTO_0 OffTO_1 OffTO_2 OffTO_3 OffTO_4 OffTO_5 DefTo_0 DefTo_1 DefTo_3 DefTo_4 DefTo_5 Def1stD DefTotYd DefPassY DefRushY/vif aic adjrsq
+selection=backward;
+run;
+quit;
+
+* get best models;
+* .6276 adj R;
+proc reg data=TEMPFILE_trng outest=betas;
+model score_tm =  Off1st_down OffTotYd OffTO DefPassY DefTO/vif aic adjrsq
+;
+run;
+quit;
+
+*.5766 adj R;
+proc reg data=TEMPFILE_trng outest=betas;
+model score_opp =  OffPassY OffTO Def1stD DefTotYd DefTO/vif aic adjrsq
+;
+run;
+quit;
+
+* macros to score training data;
+%macro SCORE_TMPTS( INFILE, OUTFILE );
+
+data &OUTFILE.;
+set &INFILE.;
+Y_Hat = -11.26329 + 
+   Off1st_down * 0.56666 +
+   OffTotYd * 0.05395 +
+   OffTO * -2.10320 + 
+	DefPassY * 0.01495 +
+	DefTO * 2.83826;
+e = Y_Hat - score_tm;
+run;
+
+%mend;
+
+%SCORE_TMPTS(TEMPFILE_trng,scored_tm_model)
+proc print data=scored_tm_model;
+run;
+
+%macro SCORE_OPPPTS( INFILE, OUTFILE );
+
+data &OUTFILE.;
+set &INFILE.;
+Y_Hat = -3.96891 + 
+   OffPassY * 0.01136 +
+   OffTO* 2.96877 +
+   Def1stD * 0.44909 + 
+	DefTotYd * 0.03664 +
+	DefTO * -2.12454;
+Y = score_opp;
+e = Y_Hat - score_opp;
+run;
+
+%mend;
+
+%SCORE_OPPPTS(TEMPFILE_trng,scored_opp_model)
+proc print data=scored_opp_model;
+run;
+
+* load staging data (2014) and score it;
+proc import datafile='/home/ecocarlisle/JAC_pgms/2014_team_gamelogs.csv'
+     out=nflseason2014
+     dbms=csv
+     replace;
+     getnames=yes;
+run;
+
+proc print data=nflseason2014;
+run;
+
+* make some transformations;
+data needpredictions;
+set nflseason2014;
+*///correct missing values///;
+if missing(OffTO) then OffTO = 0;
+if missing(DefTO) then DefTO = 0;
+if win='W' then win=1; else win = 0;
+run;
+
+%SCORE_TMPTS(needpredictions,scored_tm2014_model)
+proc print data=scored_tm2014_model;
+run;
+
+* concept is to compare each teams offensive stats to the other teams;
+* defensive stats.  We will do this for both teams.  for example;
+* the team offensive 1st downs will be compared to the defensive;
+* teams 1st downa allowed and an average will be taken of the two;
+* because team scores is more predictable with 63% I will use;
+* team scores to decide who to pick superbowl champion;
+* try out our concept on 2013 superbowl;
+data SuperbowlChamp2013_SEA;  
+input Off1st_down OffTotYd OffPassY OffTO Def1stD DefTotYd DefPassY DefTO;
+datalines;
+19.58 341.22 223.66 1.27 22.52 368.94 257.61 1.97
+;
+run;
+
+* 25-22;
+data SEA13;
+set SuperbowlChamp2013_SEA;
+*///correct missing values///;
+if missing(OffTO) then OffTO = 0;
+if missing(DefTO) then DefTO = 0;
+run;
+
+%SCORE_TMPTS(SEA13,scored_TM_model)
+proc print data=scored_TM_model;
+run;
+
+%SCORE_OPPPTS(SEA13,scored_OPP_model)
+proc print data=scored_OPP_model;
+run;
+
+data SuperbowlChamp2013_DEN;  
+input Off1st_down OffTotYd OffPassY OffTO Def1stD DefTotYd DefPassY DefTO;
+datalines;
+22.52 368.94 257.61 1.97 19.58 341.22 223.66 1.27
+;
+run;
+
+* 24-23;
+data DEN13;
+set SuperbowlChamp2013_DEN;
+*///correct missing values///;
+if missing(OffTO) then OffTO = 0;
+if missing(DefTO) then DefTO = 0;
+run;
+
+%SCORE_TMPTS(DEN13,scored_TM_model)
+proc print data=scored_TM_model;
+run;
+
+%SCORE_OPPPTS(DEN13,scored_OPP_model)
+proc print data=scored_OPP_model;
+run;
+
+* I would have selected Seahawks as Superbowl winner;
+
+
+*let's do this for 2015 suberbowl.  Patriots first.  Apply concept explained above;
+data SuperbowlChamp_PATS;  
+input Off1st_down OffTotYd OffPassY OffTO Def1stD DefTotYd DefPassY DefTO;
+datalines;
+21.75 372.88 234.72 0.94 19.19 307.91 211.83 1.63
+;
+run;
+
+* Patriots WIN 27-18;
+data PATS;
+set SuperbowlChamp_PATS;
+*///correct missing values///;
+if missing(OffTO) then OffTO = 0;
+if missing(DefTO) then DefTO = 0;
+run;
+
+%SCORE_TMPTS(PATS,scored_TM_model)
+proc print data=scored_TM_model;
+run;
+
+%SCORE_OPPPTS(PATS,scored_OPP_model)
+proc print data=scored_OPP_model;
+run;
+
+* and now Seahawks;
+data SuperbowlChamp_SEA;  
+input Off1st_down OffTotYd OffPassY OffTO Def1stD DefTotYd DefPassY DefTO;
+datalines;
+20.52 358.33 221 1.36 20.41 322.47 225.55 1.22
+;
+run;
+
+* Seahawks WIN 24-21;
+data SEA;
+set SuperbowlChamp_SEA;
+*///correct missing values///;
+if missing(OffTO) then OffTO = 0;
+if missing(DefTO) then DefTO = 0;
+run;
+
+%SCORE_TMPTS(SEA,scored_TM_model)
+proc print data=scored_TM_model;
+run;
+
+%SCORE_OPPPTS(SEA,scored_OPP_model)
+proc print data=scored_OPP_model;
+run;
+
+proc print data=needpredictions (obs=10);
+run;
+* I predict the Patriots to be superbowl XLIX champions
+* 27-24 final score
+
+
+
+
